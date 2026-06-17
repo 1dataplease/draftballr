@@ -1,0 +1,314 @@
+---
+title: "s"
+author: "tw"
+date: "2026-06-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(here)
+library(tictoc)
+library(bigrquery)
+library(dplyr)
+library(stringr) #str_detect, str_sub
+library(tidyr) #replacena
+options(scipen = 999)
+library(readr) #readr::read_tsv
+library(collapse) #fill in missing names where claim outside of encounter
+library(purrr) #to read all tabs
+library(readxl) #read xl
+library(openxlsx) #create xl w sheets
+library(fuzzyjoin) # for join where df$key in df2$key-3,-2-1,+1
+library(data.table) #faster than fuzzyjoin
+# library(DescTools) #Range not what needed
+# options(gargle_oob_default = TRUE) #does this help cache?
+# options(connectionObserver = NULL) #doesnt work
+
+write_list_to_xlsx <- function(x, sheet_names, file_name) {
+  # Basic checks
+  if (length(x) != length(sheet_names)) {
+    stop("Length of x and sheet_names must match.")
+  }
+  wb <- createWorkbook()
+  for (i in seq_along(x)) {
+    df <- x[[i]]
+    sheet <- sheet_names[[i]]
+    addWorksheet(wb, sheet)
+    # Write as Excel table
+    writeDataTable(
+      wb, sheet, df,
+      startRow = 1, startCol = 1,
+      tableStyle = "None" #TableStyleMedium2 is blue+white
+    )
+    # Auto column widths
+    setColWidths(
+      wb, sheet,
+      cols = 1:ncol(df),
+      widths = "auto"
+    )
+  }
+  saveWorkbook(wb, file_name, overwrite = TRUE)
+}
+```
+
+#picks 1-15
+
+```{r}
+#data collected from site with draft pick 1-6o filtered
+#cntrl+F RNK replace all w blank
+
+# raw26 = readxl::read_excel('0 inputs\\draftballr.xlsx', sheet = '26 raw')
+data0 = readxl::read_excel('0 inputs\\draftballr.xlsx'
+                           ,sheet = 'top 16 raw', col_names = FALSE)
+
+#wanted to use rank but it doesnt come thru on the copy+paste. drop nulls but dont use header
+data1_rm_nulls = data0 %>% drop_na()
+
+#grab rows that make up headers
+range_headers = 1:105
+#gets num of cols needed: 105 for old data
+n_columns = length(range_headers)
+# gets col names
+col_names_as_tbl=data0[range_headers,]
+col_names_as_vector = as.character(unlist(col_names_as_tbl))
+# orapm appears as college and as nba. delineate so unique col names
+dup_groups <- split(seq_along(col_names_as_vector), col_names_as_vector)
+for (idx in dup_groups) {
+  if (length(idx) > 1) {
+    col_names_as_vector[idx] <- paste0(col_names_as_vector[idx], "_", seq_along(idx))
+  }
+}
+
+#t for transpose but not needed
+# col_names_as_row = t(col_names_as_tbl)
+
+
+#get junk range
+row_headers_begin = grep("all-by-ast", data1_rm_nulls[[1]])+1
+row_data_ends = grep("RECORDS", data1_rm_nulls[[1]])-1
+row_data_starts = row_headers_begin+n_columns
+
+n_pastes = length(row_data_ends)
+
+# only look at 1st chunk (I manually removed junk rows)
+data3_chunk0 = data1_rm_nulls[ (n_columns+1) : (row_data_ends[1] - (1*n_columns+1)+1) , ]
+
+# this works
+data3_chunk1 = data1_rm_nulls[row_data_starts[1] : (row_data_ends[2]), ]
+
+# list_df_chunks = list()
+# # for(start_pt in length(row_data_starts)) {
+#   data_chunk = data1_rm_nulls[row_data_starts[1] : (row_data_ends[2]), ]
+
+#ex of getting 1 row working. drop keeps it a df
+record_w_rank = data3_chunk0[(1*n_columns+1) : (1*n_columns + n_columns), 1, drop = FALSE]
+record_as_col = t( record_w_rank)
+record_df_w_colnames <- as.data.frame( record_as_col)
+colnames(record_df_w_colnames) = col_names_as_vector
+# needed so only get
+n_records_in_paste = floor(nrow(data3_chunk0) / n_columns)-1
+
+#chunk1 is the first 50
+#create new df w real headers
+data2_cols = as.data.frame(
+  setNames(
+    replicate(n_columns, character(0), simplify = FALSE),
+    col_names_as_vector
+  ),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+#apply headers
+colnames(data2_cols) = col_names_as_vector
+data3_fill = copy(data2_cols)
+
+#just the first 50
+for(est_record in 1:n_records_in_paste) {
+  record_w_rank = data3_chunk0[(est_record*n_columns+1):(est_record*n_columns + n_columns)
+                               , 1 ,drop=FALSE]
+  record_as_col = t( record_w_rank)
+  record_df_w_colnames <- as.data.frame( record_as_col)
+  colnames(record_df_w_colnames) = col_names_as_vector
+  data3_fill = bind_rows(data3_fill, record_df_w_colnames)
+}
+
+# writexl:: write_xlsx(data3_fill, 'first 50.xlsx')
+
+#strip the junk rows between actual playerData
+rest_cleaned <- data.frame()
+for (i in seq_along(row_data_starts)) {
+  chunk <- data1_rm_nulls[
+    row_data_starts[i]:row_data_ends[i+1],
+    ,
+    drop = FALSE
+  ]
+
+  rest_cleaned <- rbind(rest_cleaned, chunk)
+}
+
+#transpose rest
+n_records_in_paste2 = floor(nrow(rest_cleaned) / n_columns)-1
+#new empty df
+data4_fill = copy(data2_cols)
+#loop thru all records, transpose. takes 10 sec
+for(est_record in 1:n_records_in_paste2) {
+  record_w_rank = rest_cleaned[(est_record*n_columns+1):(est_record*n_columns + n_columns)
+                               , 1 ,drop=FALSE]
+  record_as_col = t( record_w_rank)
+  record_df_w_colnames <- as.data.frame( record_as_col)
+  colnames(record_df_w_colnames) = col_names_as_vector
+  data4_fill = bind_rows(data4_fill, record_df_w_colnames)
+}
+
+lottery = bind_rows(data3_fill, data4_fill)
+
+# players_by_pick = lottery %>% group_by(PICK, YR) %>% summarise(count = n_distinct(PLAYER))
+
+# writexl:: write_xlsx(lottery, '1 outputs\\picks 1-16.xlsx')
+
+```
+
+#picks 16-45
+
+```{r}
+data2 = readxl::read_excel('0 inputs\\draftballr.xlsx'
+                           ,sheet = 'chunk 3 try 2', col_names = FALSE)
+data2_rm_nulls = data2 %>% drop_na()
+
+row_pct_starts = grep("Draggable item draft_pick was dropped over droppable area three_pct"
+                      ,data2_rm_nulls[[1]])+1
+# headers_pct = c(col_names_as_vector[1:22],'3PR', col_names_as_vector[23:105])
+players_new_tbbl = data1_rm_nulls[row_pct_starts, ]
+players_new = as.vector(players_new_tbbl)
+n_cols_now = 103 #accident
+col_names2 = col_names_as_vector[-c(23, 76)]
+
+# this works
+# data3_chunk2 = data1_rm_nulls[(row_pct_starts[1]) : (dplyr::last(row_data_ends)-1), ]
+
+row_data_starts2 = grep("Draggable item draft_pick was dropped over droppable area three_pct"
+                        ,data2_rm_nulls[[1]])+1
+row_data_starts3 = c(0, row_data_starts2)
+row_data_ends2 = grep("RECORDS", data2_rm_nulls[[1]])-1
+# row_data_ends3 = c(row_data_ends2, nrow(data2_rm_nulls)+1)
+
+# #2nd record
+record_w_rank = data2_rm_nulls[(7*n_cols_now+1):(8*n_cols_now) ,1]
+record_as_row = t( record_w_rank)
+record_df_w_colnames <- as.data.frame( record_as_row)
+colnames(record_df_w_colnames) = col_names2
+
+#strip the junk rows between actual playerData
+rest_cleaned2 <- data.frame()
+for (i in 1:length(row_data_starts2)) {
+  chunk <- data2_rm_nulls[
+    row_data_starts3[i]:row_data_ends3[i],
+    ,
+    drop = FALSE
+  ]
+  rest_cleaned2 <- rbind(rest_cleaned2, chunk)
+}
+
+#ex of getting 1 row working. drop keeps it a df
+record_w_rank = rest_cleaned2[((0*n_cols_now)+1):(1*n_cols_now) ,1]
+record_as_col = t( record_w_rank)
+record_df_w_colnames <- as.data.frame( record_as_col)
+colnames(record_df_w_colnames) = col_names2
+
+#ex of getting 1 row working. drop keeps it a df
+# record_w_rank = rest_cleaned2[((1*n_cols_now)+1):(2*n_cols_now) ,1]
+# record_as_col = t( record_w_rank)
+# record_df_w_colnames <- as.data.frame( record_as_col)
+# colnames(record_df_w_colnames) = col_names2
+
+
+# needed so only get
+n_records_in_paste3 = floor(nrow(rest_cleaned2) / n_cols_now)-1
+
+#loop thru each record in chunk1
+#create new df w real headers
+data4_cols = as.data.frame(
+  setNames(
+    replicate(n_cols_now, character(0), simplify = FALSE),
+    col_names2
+  ),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+#apply headers. 20min+ to get 600 players
+colnames(data4_cols) = col_names2
+data5_fill = copy(data4_cols)
+for(est_record in 1:n_records_in_paste3) {
+  print(paste0('writing ', est_record))
+  record_w_rank_ex = rest_cleaned2[((est_record*n_cols_now)+1):((est_record+1)*n_cols_now) ,1]
+  record_as_col_ex = t( record_w_rank_ex)
+  record_df_w_colnames_ex <- as.data.frame( record_as_col_ex)
+  colnames(record_df_w_colnames_ex) = col_names2
+  # print(est_record)
+  data5_fill = bind_rows(data5_fill, record_df_w_colnames_ex)
+}
+
+round2 = bind_rows(record_df_w_colnames, data5_fill)
+
+# writexl:: write_xlsx(round2, '1 outputs\\picked 17-45 1985.xlsx')
+# writexl:: write_xlsx(data2_rm_nulls, '1 outputs\\chunk 3.xlsx')
+
+```
+
+#26 + 1-15 + 16-45
+
+```{r}
+this_yr0 = readxl::read_excel('0 inputs\\draftballr.xlsx', sheet = '26 raw')
+cols_this_yr = this_yr0 %>% slice(28:92) %>% pull()
+
+this_yr1_rm = this_yr0 %>% drop_na() %>% slice(-(1:92))
+cols_this_yr_n = length(cols_this_yr)+1
+
+#ex of getting 1 row working. drop keeps it a df
+p1 = this_yr1_rm[(6*cols_this_yr_n):(7*cols_this_yr_n-2) ,1]
+p1_row = t( p1)
+p1_df <- as.data.frame(p1_row)
+colnames(p1_df) = cols_this_yr
+
+# needed so only get
+n_records_in_paste4 = floor(nrow(this_yr1_rm) / cols_this_yr_n)-1
+
+#loop thru each record in chunk1
+this_yr_store <- as.data.frame(
+  setNames(
+    replicate(cols_this_yr_n, character(0), simplify = FALSE),
+    cols_this_yr
+  ),
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+store = copy(this_yr_store)
+#populate it
+for(est_record in 1:n_records_in_paste4) {
+  print(paste0('writing ', est_record))
+  r1 = this_yr1_rm[(est_record*cols_this_yr_n):((est_record+1)*cols_this_yr_n-2) ,1]
+  r1_row = t( r1)
+  r1_df <- as.data.frame(r1_row)
+  colnames(r1_df) = cols_this_yr
+  # print(est_record)
+  store = bind_rows(store, r1_df)
+}
+store2 = store %>% select(-'NA')
+
+```
+
+#together, clean
+
+```{r}
+all = bind_rows(store2, lottery, round2)
+
+all2 = all %>% 
+  mutate(PICK = str_remove_all(PICK, "#")) %>% 
+  mutate(across(where(~ any(str_detect(.x, "[0-9]"), na.rm = TRUE)), ~ as.numeric(.x)))
+               # mutate(across(where(~ any(str_detect(.x, "[0-9]"), na.rm = TRUE)), ~ toupper(.x)))
+
+
+writexl:: write_xlsx(all, '1 outputs\\all 2835 seasons pre datatype.xlsx')
+
+```
+
