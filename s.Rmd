@@ -58,8 +58,7 @@ write_list_to_xlsx <- function(x, sheet_names, file_name) {
 #cntrl+F RNK replace all w blank
 
 # raw26 = readxl::read_excel('0 inputs\\draftballr.xlsx', sheet = '26 raw')
-data0 = readxl::read_excel('0 inputs\\draftballr.xlsx'
-                           ,sheet = 'top 16 raw', col_names = FALSE)
+data0 = readxl::read_excel('0 inputs\\draftballr.xlsx', sheet = 'top 16 raw', col_names = FALSE)
 
 #wanted to use rank but it doesnt come thru on the copy+paste. drop nulls but dont use header
 data1_rm_nulls = data0 %>% drop_na()
@@ -172,11 +171,10 @@ lottery = bind_rows(data3_fill, data4_fill)
 
 ```{r}
 data2 = readxl::read_excel('0 inputs\\draftballr.xlsx'
-                           ,sheet = 'chunk 3 try 2', col_names = FALSE)
+                           , sheet = 'chunk 3 try 2', col_names = FALSE)
 data2_rm_nulls = data2 %>% drop_na()
 
-row_pct_starts = grep("Draggable item draft_pick was dropped over droppable area three_pct"
-                      ,data2_rm_nulls[[1]])+1
+row_pct_starts = grep("Draggable item draft_pick was dropped over droppable area three_pct", data2_rm_nulls[[1]])+1
 # headers_pct = c(col_names_as_vector[1:22],'3PR', col_names_as_vector[23:105])
 players_new_tbbl = data1_rm_nulls[row_pct_starts, ]
 players_new = as.vector(players_new_tbbl)
@@ -186,8 +184,7 @@ col_names2 = col_names_as_vector[-c(23, 76)]
 # this works
 # data3_chunk2 = data1_rm_nulls[(row_pct_starts[1]) : (dplyr::last(row_data_ends)-1), ]
 
-row_data_starts2 = grep("Draggable item draft_pick was dropped over droppable area three_pct"
-                        ,data2_rm_nulls[[1]])+1
+row_data_starts2 = grep("Draggable item draft_pick was dropped over droppable area three_pct", data2_rm_nulls[[1]])+1
 row_data_starts3 = c(0, row_data_starts2)
 row_data_ends2 = grep("RECORDS", data2_rm_nulls[[1]])-1
 # row_data_ends3 = c(row_data_ends2, nrow(data2_rm_nulls)+1)
@@ -248,9 +245,9 @@ for(est_record in 1:n_records_in_paste3) {
   data5_fill = bind_rows(data5_fill, record_df_w_colnames_ex)
 }
 
-round2 = bind_rows(record_df_w_colnames, data5_fill)
+rest = bind_rows(record_df_w_colnames, data5_fill)
 
-# writexl:: write_xlsx(round2, '1 outputs\\picked 17-45 1985.xlsx')
+# writexl:: write_xlsx(rest, '1 outputs\\picked 17-45 1985.xlsx')
 # writexl:: write_xlsx(data2_rm_nulls, '1 outputs\\chunk 3.xlsx')
 
 ```
@@ -300,15 +297,38 @@ store2 = store %>% select(-'NA')
 #together, clean
 
 ```{r}
-all = bind_rows(store2, lottery, round2)
+all = bind_rows(store2, lottery, rest)
 
 all2 = all %>% 
-  mutate(PICK = str_remove_all(PICK, "#")) %>% 
-  mutate(across(where(~ any(str_detect(.x, "[0-9]"), na.rm = TRUE)), ~ as.numeric(.x)))
+  mutate(PICK = str_remove_all(PICK, "#")
+         ,YR = str_remove_all(YR, "'")
+         ,team = str_split_fixed(TEAM, "\u00A0\u00B7\u00A0", 3)[,1]
+         ,pos  = str_split_fixed(TEAM, "\u00A0\u00B7\u00A0", 3)[,2]
+         ,age  = str_split_fixed(TEAM, "\u00A0\u00B7\u00A0", 3)[,3] |> as.numeric()
+         ) %>%
+  select(-TEAM) %>%
+  mutate(ht_inches = {
+           parts = str_split_fixed(HT, "'", 2)
+           as.integer(parts[,1]) * 12L + as.integer(parts[,2])
+         }
+         ,wing_inches = {
+           parts = str_split_fixed(WING, "'", 2)
+           as.integer(parts[,1]) * 12L + as.integer(parts[,2])
+         }
+         ) %>% 
+  mutate(
+    MIN_TOT  = as.numeric(str_remove(MIN_TOT,  "k")) * 1000,
+    OFF_POSS = as.numeric(str_remove(OFF_POSS, "k")) * 1000
+  ) %>%
+  mutate(across(where(~ any(str_detect(.x, "[0-9]"),na.rm = TRUE))
+                & (8:last_col()), ~ as.numeric(.x))
+         )
                # mutate(across(where(~ any(str_detect(.x, "[0-9]"), na.rm = TRUE)), ~ toupper(.x)))
 
 
 writexl:: write_xlsx(all, '1 outputs\\all 2835 seasons pre datatype.xlsx')
+all = readxl::read_excel('1 outputs\\all 2835 seasons pre datatype.xlsx')
+
 
 ```
 
